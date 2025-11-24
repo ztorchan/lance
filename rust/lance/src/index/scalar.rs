@@ -871,9 +871,7 @@ mod tests {
             .col("id", array::step::<Int32Type>())
             .col("value", array::rand::<Float32Type>())
             .into_reader_rows(RowCount::from(100), BatchCount::from(1));
-        let mut dataset = Dataset::write(reader, &uri, None)
-            .await
-            .unwrap();
+        let mut dataset = Dataset::write(reader, &uri, None).await.unwrap();
 
         // Create BTree index on source with custom zone_size
         use lance_index::scalar::btree::BTreeParameters;
@@ -896,14 +894,11 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         // Verify index was created
         let indices = dataset.load_indices().await.unwrap();
         assert_eq!(indices.len(), 1, "Target should have 1 index");
-        assert_eq!(
-            indices[0].name, "id_btree",
-            "Index name should match"
-        );
+        assert_eq!(indices[0].name, "id_btree", "Index name should match");
         assert_eq!(
             indices[0].fields,
             vec![0],
@@ -912,11 +907,7 @@ mod tests {
 
         // Verify the index type is correct
         let scalar_index = dataset
-            .open_scalar_index(
-                "id",
-                &indices[0].uuid.to_string(),
-                &NoOpMetricsCollector,
-            )
+            .open_scalar_index("id", &indices[0].uuid.to_string(), &NoOpMetricsCollector)
             .await
             .unwrap();
 
@@ -940,22 +931,20 @@ mod tests {
             .col("id", array::step::<Int32Type>())
             .col("value", array::rand::<Float32Type>())
             .into_reader_rows(RowCount::from(200), BatchCount::from(1));
-        dataset.append (reader, None).await.unwrap();
+        dataset.append(reader, None).await.unwrap();
 
         // Optimize BTree index
-        let optimize_index_options = OptimizeOptions::new().index_names(vec!["id_btree".to_string()]);
+        let optimize_index_options =
+            OptimizeOptions::new().index_names(vec!["id_btree".to_string()]);
         dataset
             .optimize_indices(&optimize_index_options)
             .await
             .unwrap();
-        
+
         // Verify BTree parameters are same after optimization
         let indices = dataset.load_indices().await.unwrap();
         assert_eq!(indices.len(), 1, "Target should have 1 index");
-        assert_eq!(
-            indices[0].name, "id_btree",
-            "Index name should match"
-        );
+        assert_eq!(indices[0].name, "id_btree", "Index name should match");
         assert_eq!(
             indices[0].fields,
             vec![0],
@@ -963,11 +952,7 @@ mod tests {
         );
 
         let scalar_index = dataset
-            .open_scalar_index(
-                "id",
-                &indices[0].uuid.to_string(),
-                &NoOpMetricsCollector,
-            )
+            .open_scalar_index("id", &indices[0].uuid.to_string(), &NoOpMetricsCollector)
             .await
             .unwrap();
 
