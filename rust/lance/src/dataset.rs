@@ -1829,6 +1829,15 @@ impl Dataset {
         Ok(versions)
     }
 
+    /// List existing version numbers
+    pub async fn list_versions_number(&self) -> Result<Vec<u64>> {
+        self.commit_handler
+            .list_manifest_locations(&self.base, &self.object_store, false)
+            .map_ok(|location| location.version)
+            .try_collect::<Vec<u64>>()
+            .await
+    }
+
     /// Get the latest version of the dataset
     /// This is meant to be a fast path for checking if a dataset has changed. This is why
     /// we don't return the full version struct.
