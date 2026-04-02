@@ -10,16 +10,15 @@ use crate::{
 };
 use datafusion::logical_expr::Expr;
 use datafusion::scalar::ScalarValue;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use lance_core::utils::mask::RowAddrTreeMap;
 use lance_core::{Error, ROW_ID, Result};
 use lance_table::format::Fragment;
-use roaring::RoaringTreemap;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use super::CommitBuilder;
+use super::apply_deletions;
 use super::retry::{RetryConfig, RetryExecutor, execute_with_retry};
 
 /// Result of a delete operation.
@@ -29,55 +28,6 @@ pub struct DeleteResult {
     pub new_dataset: Arc<Dataset>,
     /// The number of rows that were deleted.
     pub num_deleted_rows: u64,
-}
-
-/// Apply deletions to fragments based on a RoaringTreemap of row IDs.
-///
-/// Returns the set of modified fragments and removed fragments, if any.
-async fn apply_deletions(
-    dataset: &Dataset,
-    removed_row_addrs: &RoaringTreemap,
-) -> Result<(Vec<Fragment>, Vec<u64>)> {
-    let bitmaps = Arc::new(removed_row_addrs.bitmaps().collect::<BTreeMap<_, _>>());
-
-    enum FragmentChange {
-        Unchanged,
-        Modified(Box<Fragment>),
-        Removed(u64),
-    }
-
-    let mut updated_fragments = Vec::new();
-    let mut removed_fragments = Vec::new();
-
-    let mut stream = futures::stream::iter(dataset.get_fragments())
-        .map(move |fragment| {
-            let bitmaps_ref = bitmaps.clone();
-            async move {
-                let fragment_id = fragment.id();
-                if let Some(bitmap) = bitmaps_ref.get(&(fragment_id as u32)) {
-                    match fragment.extend_deletions(*bitmap).await {
-                        Ok(Some(new_fragment)) => {
-                            Ok(FragmentChange::Modified(Box::new(new_fragment.metadata)))
-                        }
-                        Ok(None) => Ok(FragmentChange::Removed(fragment_id as u64)),
-                        Err(e) => Err(e),
-                    }
-                } else {
-                    Ok(FragmentChange::Unchanged)
-                }
-            }
-        })
-        .buffer_unordered(dataset.object_store.io_parallelism());
-
-    while let Some(res) = stream.next().await.transpose()? {
-        match res {
-            FragmentChange::Unchanged => {}
-            FragmentChange::Modified(fragment) => updated_fragments.push(*fragment),
-            FragmentChange::Removed(fragment_id) => removed_fragments.push(fragment_id),
-        }
-    }
-
-    Ok((updated_fragments, removed_fragments))
 }
 
 /// Builder for configuring delete operations with retry support

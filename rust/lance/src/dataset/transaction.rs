@@ -13,7 +13,7 @@
 //! [Transaction Specification](https://lance.org/format/table/transaction/#transaction-types).
 
 use super::ManifestWriteConfig;
-use super::write::merge_insert::inserted_rows::KeyExistenceFilter;
+use super::write::key_existence_filter::KeyExistenceFilter;
 use crate::dataset::transaction::UpdateMode::RewriteRows;
 use crate::index::mem_wal::update_mem_wal_index_merged_generations;
 use crate::utils::temporal::timestamp_to_nanos;

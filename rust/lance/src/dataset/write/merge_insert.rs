@@ -19,10 +19,8 @@
 // Internal column name for the merge action. Using "__action" to avoid collisions with user columns.
 const MERGE_ACTION_COLUMN: &str = "__action";
 
-pub mod inserted_rows;
-
+use super::key_existence_filter::KeyExistenceFilter;
 use assign_action::merge_insert_action;
-use inserted_rows::KeyExistenceFilter;
 
 use super::retry::{RetryConfig, RetryExecutor, execute_with_retry};
 use super::{CommitBuilder, WriteParams, write_fragments_internal};
@@ -102,7 +100,7 @@ use log::info;
 use roaring::RoaringTreemap;
 use snafu::ResultExt;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU32, Ordering},
@@ -1637,7 +1635,7 @@ impl MergeInsertJob {
             let removed_row_addrs = RoaringTreemap::from_iter(removed_row_addr_vec.into_iter());
 
             let (old_fragments, removed_fragment_ids) =
-                Self::apply_deletions(&self.dataset, &removed_row_addrs).await?;
+                super::apply_deletions(&self.dataset, &removed_row_addrs).await?;
 
             // Commit updated and new fragments
             let operation = Operation::Update {
@@ -1674,53 +1672,6 @@ impl MergeInsertJob {
             stats,
             inserted_rows_filter: None, // not implemented for v1
         })
-    }
-
-    // Delete a batch of rows by id, returns the fragments modified and the fragments removed
-    async fn apply_deletions(
-        dataset: &Dataset,
-        removed_row_ids: &RoaringTreemap,
-    ) -> Result<(Vec<Fragment>, Vec<u64>)> {
-        let bitmaps = Arc::new(removed_row_ids.bitmaps().collect::<BTreeMap<_, _>>());
-
-        enum FragmentChange {
-            Unchanged,
-            Modified(Box<Fragment>),
-            Removed(u64),
-        }
-
-        let mut updated_fragments = Vec::new();
-        let mut removed_fragments = Vec::new();
-
-        let mut stream = futures::stream::iter(dataset.get_fragments())
-            .map(move |fragment| {
-                let bitmaps_ref = bitmaps.clone();
-                async move {
-                    let fragment_id = fragment.id();
-                    if let Some(bitmap) = bitmaps_ref.get(&(fragment_id as u32)) {
-                        match fragment.extend_deletions(*bitmap).await {
-                            Ok(Some(new_fragment)) => {
-                                Ok(FragmentChange::Modified(Box::new(new_fragment.metadata)))
-                            }
-                            Ok(None) => Ok(FragmentChange::Removed(fragment_id as u64)),
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        Ok(FragmentChange::Unchanged)
-                    }
-                }
-            })
-            .buffer_unordered(dataset.object_store.io_parallelism());
-
-        while let Some(res) = stream.next().await.transpose()? {
-            match res {
-                FragmentChange::Unchanged => {}
-                FragmentChange::Modified(fragment) => updated_fragments.push(*fragment),
-                FragmentChange::Removed(fragment_id) => removed_fragments.push(fragment_id),
-            }
-        }
-
-        Ok((updated_fragments, removed_fragments))
     }
 
     /// Generate the execution plan and return it as a formatted string for debugging.
@@ -2223,7 +2174,7 @@ impl Merger {
 mod tests {
     use super::*;
     use crate::dataset::scanner::ColumnOrdering;
-    use crate::dataset::write::merge_insert::inserted_rows::{
+    use crate::dataset::write::key_existence_filter::{
         KeyExistenceFilter, KeyExistenceFilterBuilder, extract_key_value_from_batch,
     };
     use crate::index::vector::VectorIndexParams;

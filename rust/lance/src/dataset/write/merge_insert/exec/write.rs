@@ -25,7 +25,7 @@ use roaring::RoaringTreemap;
 
 use crate::dataset::transaction::UpdateMode::RewriteRows;
 use crate::dataset::utils::CapturedRowIds;
-use crate::dataset::write::merge_insert::inserted_rows::{
+use crate::dataset::write::key_existence_filter::{
     KeyExistenceFilter, KeyExistenceFilterBuilder, extract_key_value_from_batch,
 };
 use crate::dataset::write::merge_insert::{

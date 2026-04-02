@@ -27,7 +27,7 @@ use lance_table::format::{BasePath, DataFile, Fragment};
 use lance_table::io::commit::{CommitHandler, commit_handler_from_url};
 use lance_table::io::manifest::ManifestDescribing;
 use object_store::path::Path;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZero;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -48,6 +48,7 @@ use super::utils::SchemaAdapter;
 mod commit;
 pub mod delete;
 mod insert;
+pub mod key_existence_filter;
 pub mod merge_insert;
 mod retry;
 pub mod update;
@@ -56,6 +57,59 @@ pub use super::progress::{WriteProgressFn, WriteStats};
 pub use commit::CommitBuilder;
 pub use delete::{DeleteBuilder, DeleteResult};
 pub use insert::InsertBuilder;
+
+use roaring::RoaringTreemap;
+
+/// Apply deletions to fragments in the dataset.
+///
+/// Concurrently iterates over all fragments in the dataset based on `removed_row_addrs`
+/// (row addresses in RoaringTreemap format), applies `extend_deletions` to matching fragments,
+/// and returns the modified fragments along with the IDs of fully deleted fragments.
+pub async fn apply_deletions(
+    dataset: &Dataset,
+    removed_row_addrs: &RoaringTreemap,
+) -> Result<(Vec<Fragment>, Vec<u64>)> {
+    let bitmaps = Arc::new(removed_row_addrs.bitmaps().collect::<BTreeMap<_, _>>());
+
+    enum FragmentChange {
+        Unchanged,
+        Modified(Box<Fragment>),
+        Removed(u64),
+    }
+
+    let mut updated_fragments = Vec::new();
+    let mut removed_fragments = Vec::new();
+
+    let mut stream = futures::stream::iter(dataset.get_fragments())
+        .map(move |fragment| {
+            let bitmaps_ref = bitmaps.clone();
+            async move {
+                let fragment_id = fragment.id();
+                if let Some(bitmap) = bitmaps_ref.get(&(fragment_id as u32)) {
+                    match fragment.extend_deletions(*bitmap).await {
+                        Ok(Some(new_fragment)) => {
+                            Ok(FragmentChange::Modified(Box::new(new_fragment.metadata)))
+                        }
+                        Ok(None) => Ok(FragmentChange::Removed(fragment_id as u64)),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    Ok(FragmentChange::Unchanged)
+                }
+            }
+        })
+        .buffer_unordered(dataset.object_store.io_parallelism());
+
+    while let Some(res) = stream.next().await.transpose()? {
+        match res {
+            FragmentChange::Unchanged => {}
+            FragmentChange::Modified(fragment) => updated_fragments.push(*fragment),
+            FragmentChange::Removed(fragment_id) => removed_fragments.push(fragment_id),
+        }
+    }
+
+    Ok((updated_fragments, removed_fragments))
+}
 
 /// The destination to write data to.
 #[derive(Debug, Clone)]
